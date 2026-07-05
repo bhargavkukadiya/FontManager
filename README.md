@@ -2,8 +2,6 @@
 
 **Production-Ready iOS & iPadOS Font Management System**
 
-> **Revision 2 — Swift 6 correctness pass.** This revision fixes a real data race, a `@MainActor`-isolation compile blocker, an unsafe format specifier, and adds `Sendable` conformance for Swift 6 strict concurrency. See [Correctness Review](#correctness-review--swift-6--current-platform-notes) for the full list.
-
 | | |
 |---|---|
 | **Platform** | iOS 14.0+ · iPadOS 14.0+ (builds clean on iOS 26 SDK / Xcode 26+) |
@@ -266,7 +264,7 @@ The font cache invalidates automatically when `UIContentSizeCategory.didChangeNo
 
 ## Thread Safety & Concurrency
 
-FontManager uses `NSLock` to guard all reads and writes to the internal cache dictionary, and — as of this revision — the `fontSource` and `respectsDynamicType` properties as well. `uiFont(for:)`, `swiftUIFont(for:)`, and `attributedString(_:style:)` are safe to call from any thread.
+FontManager uses `NSLock` to guard all reads and writes to the internal cache dictionary, as well as the `fontSource` and `respectsDynamicType` properties. `uiFont(for:)`, `swiftUIFont(for:)`, and `attributedString(_:style:)` are safe to call from any thread.
 
 The UIKit-mutating helpers (`apply(_:to:)`, `applyTabBarFont`, `apply(to: UINavigationBar)`, and the `UILabel`/`UITextField`/`UITextView`/`UIButton` `appFont(_:)` extensions) are explicitly marked `@MainActor`, matching the actor isolation of the view classes they touch under Swift 6.
 
@@ -321,8 +319,6 @@ The original code passed a Swift `String` to `%s` inside `String(format:)`. That
 
 **8. Platform / toolchain context.**
 Apple unified its OS versioning in 2025, so what would have been "iOS 19" became iOS 26; the SDK is currently at iOS 26.x with iOS 27 in beta. Since April 28, 2026, Apple requires App Store submissions to be built with the iOS 26 SDK or later — this affects which Xcode you build with, not your minimum deployment target, so this file's iOS 14.0+ deployment target is unaffected. No `UIFont`, `UIFontDescriptor`, `UIFontMetrics`, or Core Text API used in this file has been deprecated as of this SDK.
-
----
 
 **9. `UIDevice.current.userInterfaceIdiom` had the same problem as `UIApplication.shared`.**
 `isIPad` (used by `uiFont(for:)`, `spec(for:)`, and the cache key) originally read `UIDevice.current.userInterfaceIdiom`. Both `UIDevice.current` and `.userInterfaceIdiom` are `@MainActor`-isolated in current SDKs, which produces the same class of warning as the `UIApplication.shared` issue above (`main actor-isolated property 'userInterfaceIdiom' can not be referenced from a nonisolated context`). Fixed the same way: switched to `UITraitCollection.current.userInterfaceIdiom`, which is thread-local and carries the identical value.
