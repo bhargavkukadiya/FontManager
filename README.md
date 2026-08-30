@@ -1,46 +1,60 @@
+<div align="center">
+
 # FontManager.swift
 
-**Production-Ready iOS & iPadOS Font Management System**
+### Production-ready typography management singleton for iOS & iPadOS
 
-| | |
-|---|---|
-| **Platform** | iOS 14.0+ · iPadOS 14.0+ (builds clean on iOS 26 SDK / Xcode 16+ / Xcode 26+) |
-| **Language** | Swift 5.7+ · Swift 6 strict concurrency mode audited |
-| **Xcode** | 14.0+ (verified against Xcode 26) |
-| **Type** | Singleton — `final class`, `@unchecked Sendable` |
-| **Fonts** | System (SF Pro) + custom TTF/OTF |
-| **Accessibility** | Full Dynamic Type support |
-| **SwiftUI** | Native `Font` + ViewModifier with letter-spacing tracking |
-| **3rd Party** | None — zero dependencies |
+[![Swift](https://img.shields.io/badge/Swift-5.7%20%7C%206.0-F05138?style=flat-square&logo=swift&logoColor=white)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/Platforms-iOS%2014.0%2B%20%7C%20iPadOS%2014.0%2B-000000?style=flat-square&logo=apple&logoColor=white)](https://developer.apple.com/ios/)
+[![SwiftPM](https://img.shields.io/badge/SwiftPM-Compatible-brightgreen?style=flat-square&logo=swift&logoColor=white)](https://swift.org/package-manager/)
+[![Concurrency](https://img.shields.io/badge/Swift%206%20Concurrency-Clean-success?style=flat-square)](https://developer.apple.com/documentation/swift/concurrency)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
+</div>
 
 ---
 
-## Overview
+## 📖 Overview
 
-FontManager is a zero-dependency, thread-safe singleton that centralises every font decision in your iOS or iPadOS application. Instead of scattering point sizes and weights across view controllers, you reference a single semantic token — `.title1`, `.body`, `.buttonPrimary` — and FontManager resolves the correct `UIFont` or SwiftUI `Font` for the current device class.
+Managing typography in large iOS applications often leads to fragmented point sizes, inconsistent line heights, broken iPad layouts, and ignored Accessibility text settings.
 
-**Key capabilities:**
+**FontManager** is a lightweight, zero-dependency, thread-safe typography engine that unifies every font decision across **UIKit**, **SwiftUI**, and **AttributedStrings** behind a single semantic token system (`.title1`, `.body`, `.buttonPrimary`).
 
-- **Dedicated iPhone & iPad Scale Tables** with tuned point sizes and letter-spacing (`tracking`)
-- **Static Scale Storage** — Zero unnecessary dictionary allocations on lookup
-- **Dynamic Type scaling** via `UIFontMetrics` — respecting the user's Accessibility text-size preference
-- **System Font & Custom Font Support** (TTF/OTF) with automatic fallback and duplicate-registration tolerance
-- **Thread-safe `NSLock` cache** — fonts are built once and reused across threads
-- **Modern UIKit Support**:
-  - `UIButton.Configuration` (iOS 15+) and legacy `titleLabel`
-  - `UINavigationBarAppearance` and `UITabBarAppearance`
-  - `UILabel`, `UITextField`, `UITextView`
-- **SwiftUI ViewModifier** (`.appFont(.title1)`) with native letter-spacing tracking
-- **Swift Value-Type `AttributedString` (iOS 15+)** and Foundation `NSAttributedString` helpers
-- **Swift 6 Strict Concurrency Clean**: explicit `Sendable` conformance and `@MainActor` isolation on view mutations
+```swift
+// UIKit
+titleLabel.appFont(.largeTitle)
+actionButton.appFont(.buttonPrimary)
+
+// SwiftUI (includes native letter-spacing tracking on iOS 14+)
+Text("Welcome Back")
+    .appFont(.largeTitle)
+```
 
 ---
 
-## Installation
+## ✨ Features
 
-### Option 1: Swift Package Manager (Recommended)
+- 📱 **Universal Device Adaptation**: Tailored scale tables for iPhone and iPad canvas sizes.
+- ♿ **Dynamic Type by Default**: Automatic `UIFontMetrics` scaling honoring user accessibility preferences.
+- ⚡ **Swift 6 Concurrency Certified**: Deadlock-free singleton (`@unchecked Sendable`) backed by an `NSLock` cache and `@MainActor`-isolated UI mutators.
+- 🔤 **Custom & System Fonts**: Seamless switching between SF Pro and custom `.ttf`/`.otf` font families with graceful fallback and duplicate registration handling.
+- 🎨 **Unified UIKit & SwiftUI**: Direct view extensions for `UILabel`, `UITextField`, `UITextView`, `UIButton` (including iOS 15+ `UIButton.Configuration`), `UINavigationBarAppearance`, and `UITabBarAppearance`.
+- 🔠 **Letter-Spacing (Tracking) Support**: Native tracking applied to UIKit, SwiftUI `Text`, and `AttributedString`.
+- 🪶 **Zero Dependencies**: Pure Swift built entirely on Foundation, UIKit, SwiftUI, and CoreText.
 
-Add FontManager to your `Package.swift` dependencies:
+---
+
+## 📦 Installation
+
+### Swift Package Manager (Recommended)
+
+In Xcode, select **File › Add Package Dependencies...** and enter:
+
+```
+https://github.com/bhargavkukadiya/FontManager.git
+```
+
+Or add it directly to your `Package.swift`:
 
 ```swift
 dependencies: [
@@ -50,229 +64,163 @@ dependencies: [
 
 *(Or specify a release tag like `from: "1.0.0"` once tagged).*
 
-Or in Xcode: **File › Add Package Dependencies...** and enter the repository URL.
-
-### Option 2: Drop-in File
+### Manual Drop-in
 
 Drag and drop `FontManager.swift` directly into your Xcode project.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### 1. (Optional) Configure at Launch
 
-In `AppDelegate` or your SwiftUI `App` struct, configure your typography before windows render:
+Configure your custom font family or global preferences in your `AppDelegate` or SwiftUI `App`:
 
 ```swift
-// AppDelegate.swift
-func application(_ application: UIApplication,
-    didFinishLaunchingWithOptions ...) -> Bool {
+// AppDelegate.swift or @main App
+func application(_ application: UIApplication, didFinishLaunchingWithOptions ...) -> Bool {
 
     // Register custom fonts (skip if using system SF Pro)
     FontManager.shared.registerFont(named: "Poppins-Regular")
     FontManager.shared.registerFont(named: "Poppins-SemiBold")
     FontManager.shared.registerFont(named: "Poppins-Bold")
 
-    // Switch source to your custom family
+    // Set active font source
     FontManager.shared.fontSource = .custom(familyName: "Poppins")
 
-    // Optional: Disable Dynamic Type if fixed sizes are required by design
+    // Optional: Disable Dynamic Type if fixed point sizes are required
     // FontManager.shared.respectsDynamicType = false
 
     return true
 }
 ```
 
-### 2. Apply Fonts
+### 2. Apply Across UIKit & SwiftUI
 
-**UIKit — View Extensions:**
+#### UIKit — Direct Extensions
 
 ```swift
+// Labels & Text Fields
 titleLabel.appFont(.largeTitle)
 subtitleLabel.appFont(.title2)
-bodyLabel.appFont(.body)
-captionLabel.appFont(.caption1)
-emailField.appFont(.textFieldText)
-primaryButton.appFont(.buttonPrimary)
-```
+bodyTextView.appFont(.body)
+emailTextField.appFont(.textFieldText)
 
-**UIKit — Direct Manager Queries:**
+// Buttons (Supports modern UIButton.Configuration & legacy titleLabel)
+submitButton.appFont(.buttonPrimary)
 
-```swift
-label.font = FontManager.shared.uiFont(for: .headline)
-label.adjustsFontForContentSizeCategory = true
-```
-
-**SwiftUI — Native Text & View Extensions:**
-
-```swift
-// Direct Text modifier: sets both font and tracking (iOS 14+)
-Text("Welcome")
-    .appFont(.largeTitle)
-    .foregroundColor(.primary)
-
-// General View modifier: sets font (and tracking on iOS 16+)
-VStack {
-    Text("Title")
-    Text("Subtitle")
-}
-.appFont(.body)
-```
-
-**SwiftUI — Direct `Font`:**
-
-```swift
-Text("Supporting copy")
-    .font(FontManager.shared.swiftUIFont(for: .body))
-```
-
----
-
-## Style Token Reference
-
-All 21 semantic tokens, their resolved sizes on iPhone and iPad, and their typographic metadata. Sizes shown are the base (Dynamic Type "Large" category). Scalable tokens grow with the user's preferred content size; non-scalable tokens remain fixed.
-
-| Style Token | iPhone (pt) | iPad (pt) | Weight | Scalable | Tracking |
-|---|---|---|---|---|---|
-| `.largeTitle` | 34 | 40 | Bold | ✓ | +0.37 |
-| `.navigationTitle` | 17 | 18 | Semibold | — | -0.41 |
-| `.pageHeader` | 28 | 34 | Bold | ✓ | +0.36 |
-| `.title1` | 28 | 34 | Bold | ✓ | +0.36 |
-| `.title2` | 22 | 28 | Bold | ✓ | +0.35 |
-| `.title3` | 20 | 24 | Semibold | ✓ | +0.38 |
-| `.headline` | 17 | 18 | Semibold | ✓ | -0.41 |
-| `.body` | 17 | 18 | Regular | ✓ | -0.41 |
-| `.callout` | 16 | 17 | Regular | ✓ | -0.32 |
-| `.subheadline` | 15 | 16 | Regular | ✓ | -0.24 |
-| `.footnote` | 13 | 14 | Regular | ✓ | -0.08 |
-| `.caption1` | 12 | 13 | Regular | ✓ | 0.00 |
-| `.caption2` | 11 | 12 | Regular | ✓ | +0.07 |
-| `.textFieldText` | 17 | 18 | Regular | ✓ | -0.41 |
-| `.textFieldPlaceholder` | 17 | 18 | Regular | ✓ | -0.41 |
-| `.buttonPrimary` | 17 | 18 | Semibold | ✓ | -0.41 |
-| `.buttonSecondary` | 17 | 18 | Regular | ✓ | -0.41 |
-| `.buttonDestructive` | 17 | 18 | Regular | ✓ | -0.41 |
-| `.tabBarItem` | 10 | 11 | Medium | — | +0.12 |
-| `.badgeLabel` | 12 | 13 | Bold | — | 0.00 |
-| `.tooltip` | 13 | 14 | Regular | — | -0.08 |
-
----
-
-## API Reference
-
-### `FontSource`
-
-Controls whether FontManager builds fonts from the system or a registered custom family.
-
-```swift
-FontManager.shared.fontSource = .system
-FontManager.shared.fontSource = .custom(familyName: "Inter")
-```
-
-### `respectsDynamicType`
-
-When `true` (default), scalable tokens are wrapped with `UIFontMetrics` and grow or shrink with `UIContentSizeCategory`. Both this and `fontSource` are lock-protected computed properties, safe to access concurrently across threads.
-
-### `uiFont(for:)`
-
-Returns a `UIFont` for the given `AppTextStyle`. Thread-safe; cached per device class and accessibility size.
-
-```swift
-let font: UIFont = FontManager.shared.uiFont(for: .title1)
-```
-
-### `swiftUIFont(for:)`
-
-Returns a SwiftUI `Font` wrapping the resolved `UIFont`.
-
-```swift
-let font: Font = FontManager.shared.swiftUIFont(for: .body)
-```
-
-### `attributedString(_:style:)` (iOS 15+)
-
-Builds a Swift value-type `AttributedString` with the correct font and tracking attributes.
-
-```swift
-let attr = FontManager.shared.attributedString("Hello, World", style: .title1)
-```
-
-### `attributedString(_:style:additionalAttributes:)`
-
-Builds an `NSAttributedString` with the correct `.font` and `.kern` (letter-spacing) attributes.
-
-```swift
-let attr = FontManager.shared.attributedString(
-    "Hello, World",
-    style: .title1,
-    additionalAttributes: [.foregroundColor: UIColor.label]
-)
-```
-
-### `apply(_:to:)` — `@MainActor`
-
-Applies a font directly to `UILabel`, `UITextField`, `UITextView`, or `UIButton`. For `UIButton`, seamlessly configures `UIButton.Configuration.titleTextAttributesTransformer` on iOS 15+ or `titleLabel` on legacy configurations.
-
-```swift
-FontManager.shared.apply(.body, to: myLabel)
-FontManager.shared.apply(.buttonPrimary, to: myButton)
-```
-
-### `apply(largeTitleStyle:inlineTitleStyle:to:)` — `@MainActor`
-
-Configures `standardAppearance`, `compactAppearance`, `scrollEdgeAppearance`, and direct attributes on a `UINavigationBar`.
-
-```swift
+// Navigation & Tab Bars
 FontManager.shared.apply(to: navigationController.navigationBar)
-```
-
-### `applyTabBarFont(to:)` — `@MainActor`
-
-Configures `UITabBarAppearance` on the given `UITabBar` instance as well as global appearance proxies.
-
-```swift
 FontManager.shared.applyTabBarFont(to: tabBarController.tabBar)
 ```
 
-### `registerFont(named:extension:bundle:)`
-
-Programmatically registers a custom font from any bundle using CoreText. Handles duplicate registration gracefully (`kCTFontManagerErrorAlreadyRegistered`).
+#### SwiftUI — Text & View Modifiers
 
 ```swift
-FontManager.shared.registerFont(named: "Inter-Bold", extension: "otf")
+// Text modifier: Applies both font and letter-spacing tracking (iOS 14+)
+Text("Welcome")
+    .appFont(.largeTitle)
+
+// General View modifier: Sets font environment (and tracking on iOS 16+)
+VStack(alignment: .leading, spacing: 8) {
+    Text("Header")
+    Text("Supporting description copy")
+}
+.appFont(.body)
+
+// Direct SwiftUI Font
+Text("Direct query")
+    .font(FontManager.shared.swiftUIFont(for: .headline))
 ```
 
-### `debugPrintAllFonts()`
-
-Prints a formatted table of every resolved font for the current device class.
+#### AttributedString & Modern Swift Attributed Text
 
 ```swift
-#if DEBUG
-FontManager.shared.debugPrintAllFonts()
-#endif
+// Modern Swift AttributedString (iOS 15+)
+let modernAttr = FontManager.shared.attributedString("Styled Copy", style: .title1)
+
+// Foundation NSAttributedString
+let legacyAttr = FontManager.shared.attributedString(
+    "Highlighted Copy",
+    style: .headline,
+    additionalAttributes: [.foregroundColor: UIColor.systemBlue]
+)
 ```
 
 ---
 
-## Dynamic Type & Accessibility
+## 📐 Typographic Scale Reference
 
-All tokens with `scalable: true` are wrapped with `UIFontMetrics` before being returned, ensuring they scale in harmony with Apple's Human Interface Guidelines.
+Sizes shown are base point sizes (Dynamic Type "Large" category). Scalable tokens automatically expand and contract with the user's preferred content size.
 
-Non-scalable tokens (`navigationTitle`, `tabBarItem`, `badgeLabel`, `tooltip`) remain fixed to prevent compact navigation and chrome elements from clipping or breaking layout.
-
-The font cache automatically invalidates when `UIContentSizeCategory.didChangeNotification` fires.
+| Style Token | iPhone (pt) | iPad (pt) | Weight | Scalable | Tracking | Typical Role |
+|---|:---:|:---:|:---:|:---:|:---:|---|
+| `.largeTitle` | 34 | 40 | Bold | ✓ | +0.37 | Hero titles, splash headlines |
+| `.navigationTitle` | 17 | 18 | Semibold | — | -0.41 | Navigation bar title |
+| `.pageHeader` | 28 | 34 | Bold | ✓ | +0.36 | Section / page headers |
+| `.title1` | 28 | 34 | Bold | ✓ | +0.36 | Screen / primary card titles |
+| `.title2` | 22 | 28 | Bold | ✓ | +0.35 | Sub-section headers |
+| `.title3` | 20 | 24 | Semibold | ✓ | +0.38 | Grouping headers |
+| `.headline` | 17 | 18 | Semibold | ✓ | -0.41 | Emphasized content |
+| `.body` | 17 | 18 | Regular | ✓ | -0.41 | Default reading copy |
+| `.callout` | 16 | 17 | Regular | ✓ | -0.32 | Pull quotes, callouts |
+| `.subheadline` | 15 | 16 | Regular | ✓ | -0.24 | Secondary supporting text |
+| `.footnote` | 13 | 14 | Regular | ✓ | -0.08 | Legal copy, footnotes |
+| `.caption1` | 12 | 13 | Regular | ✓ | 0.00 | Timestamps, image captions |
+| `.caption2` | 11 | 12 | Regular | ✓ | +0.07 | Micro-badges, smallest label |
+| `.textFieldText` | 17 | 18 | Regular | ✓ | -0.41 | Text field input content |
+| `.textFieldPlaceholder` | 17 | 18 | Regular | ✓ | -0.41 | Text field placeholder |
+| `.buttonPrimary` | 17 | 18 | Semibold | ✓ | -0.41 | Primary action buttons |
+| `.buttonSecondary` | 17 | 18 | Regular | ✓ | -0.41 | Secondary action buttons |
+| `.buttonDestructive` | 17 | 18 | Regular | ✓ | -0.41 | Destructive / alert buttons |
+| `.tabBarItem` | 10 | 11 | Medium | — | +0.12 | Tab bar item labels |
+| `.badgeLabel` | 12 | 13 | Bold | — | 0.00 | Notification counter badges |
+| `.tooltip` | 13 | 14 | Regular | — | -0.08 | Floating tooltips |
 
 ---
 
-## Thread Safety & Concurrency
+## 🔤 Custom Fonts Guide
 
-- `FontManager` is `@unchecked Sendable`. Reads and writes to `cache`, `fontSource`, and `respectsDynamicType` are guarded by an internal `NSLock`.
-- Device idiom is resolved once and cached safely, preventing background threads from experiencing trait fallback issues.
-- All view-mutating helpers are explicitly marked `@MainActor`.
+To use custom fonts in your application:
+
+1. **Add Font Files**: Add your `.ttf` or `.otf` files to your Xcode target.
+2. **Update Info.plist**: Add font filenames under the `Fonts provided by application` (`UIAppFonts`) key.
+3. **Register & Activate**:
+   ```swift
+   FontManager.shared.registerFont(named: "Inter-Regular")
+   FontManager.shared.registerFont(named: "Inter-SemiBold")
+   FontManager.shared.registerFont(named: "Inter-Bold")
+
+   FontManager.shared.fontSource = .custom(familyName: "Inter")
+   ```
+
+*If a custom font family is not registered or cannot be resolved, FontManager logs a non-fatal debug warning and gracefully falls back to the system font without crashing.*
 
 ---
 
-## License
+## 🧵 Thread Safety & Concurrency
 
-MIT License. Copyright © 2026 Bhargav Kukadia. Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the Software), to deal in the Software without restriction.
+- **Lock-Protected Storage**: `FontManager` is an `@unchecked Sendable` singleton. State mutations (`cache`, `fontSource`, `respectsDynamicType`) are synchronised via `NSLock`.
+- **Zero Deadlocks**: Device classification operates on non-blocking POSIX `utsname` and `ProcessInfo` inspection without dispatching synchronously to the main thread.
+- **Atomic Cache Invalidation**: Changing configuration atomically clears the cache under lock, and font resolution verifies snapshot consistency before insertion.
+- **MainActor Isolation**: All view mutators (`apply(_:to:)`, `UILabel.appFont`, etc.) are isolated to `@MainActor`.
+
+---
+
+## 🧪 Running Tests
+
+The test suite validates concurrency safety, Dynamic Type scaling, custom font fallbacks, and UIKit/SwiftUI integrations:
+
+```bash
+swift test
+```
+
+Or open in Xcode and press `Cmd+U`.
+
+---
+
+## 📄 License
+
+FontManager is released under the **MIT License**. See [LICENSE](LICENSE) for details.
+
+Copyright © 2026 [Bhargav Kukadia](https://github.com/bhargavkukadiya).
