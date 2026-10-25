@@ -760,6 +760,7 @@ private struct AppFontText: View {
 public extension Text {
     /// Applies a semantic `AppTextStyle` font and letter-spacing tracking to this `Text` view (iOS 14+),
     /// following the environment's Dynamic Type size.
+    @MainActor
     func appFont(_ style: AppTextStyle) -> some View {
         AppFontText(text: self, style: style)
     }
