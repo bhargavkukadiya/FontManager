@@ -225,7 +225,15 @@ To use custom fonts in your application:
      FontManager.shared.registerFont(named: "Inter-SemiBold", bundle: .module)
      FontManager.shared.registerFont(named: "Inter-Bold", bundle: .module)
      ```
-     Use `.module` inside the Swift package target that declares the font resources. For fonts in your app target, omit `bundle:` to use `.main`.
+     Use `.module` inside the Swift package target that declares the font resources. `Bundle.module` only exists when that target lists them in its `Package.swift`:
+     ```swift
+     .target(
+         name: "MyDesignSystem",
+         dependencies: ["FontManager"],
+         resources: [.process("Fonts")]
+     )
+     ```
+     `.process` places the font files at the bundle's root, where `registerFont` looks for them. For fonts in your app target, omit `bundle:` to use `.main`.
 3. **Activate** the family:
    ```swift
    FontManager.shared.fontSource = .custom(familyName: "Inter")
