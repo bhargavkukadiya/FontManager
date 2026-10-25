@@ -38,7 +38,7 @@ Text("Welcome Back")
 - ♿ **Dynamic Type by Default**: Automatic `UIFontMetrics` scaling honoring user accessibility preferences in UIKit and SwiftUI, including SwiftUI environment overrides.
 - ⚡ **Swift 6 Language Mode**: Built in Swift 6 mode on Swift 6 toolchains (Swift 5 mode on 5.7–5.10). Deadlock-free singleton (`@unchecked Sendable`) backed by an `NSLock` cache and `@MainActor`-isolated UI mutators.
 - 🔤 **Custom & System Fonts**: Seamless switching between SF Pro and custom `.ttf`/`.otf` font families with graceful fallback and duplicate registration handling.
-- 🎨 **Unified UIKit & SwiftUI**: Direct view extensions for `UILabel`, `UITextField` (text and placeholder), `UITextView`, `UIButton` (including iOS 15+ `UIButton.Configuration`), `UINavigationBarAppearance`, and `UITabBarAppearance`. Bar helpers only change fonts and keep your colors and backgrounds.
+- 🎨 **Unified UIKit & SwiftUI**: Direct view extensions for `UILabel`, `UITextField` (text and placeholder), `UITextView`, and `UIButton` (including iOS 15+ `UIButton.Configuration`), plus appearance helpers for `UINavigationBar` and `UITabBar`. Bar helpers only change fonts and keep your colors and backgrounds.
 - 🔠 **Letter-Spacing (Tracking) Support**: Tracking applied by SwiftUI `Text.appFont` (iOS 14+), `View.appFont` (iOS 16+), placeholders, `NSAttributedString`, and `AttributedString`. UIKit view helpers set the font only; use `attributedString(_:style:)` for tracked UIKit text.
 - 🪶 **Zero Dependencies**: Pure Swift built entirely on Foundation, UIKit, SwiftUI, and CoreText.
 
@@ -58,11 +58,11 @@ Or add it directly to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/bhargavkukadiya/FontManager.git", branch: "main")
+    .package(url: "https://github.com/bhargavkukadiya/FontManager.git", from: "2.0.0")
 ]
 ```
 
-*(Or specify a minimum release version with `from:`, which accepts later releases up to the next major version, or a fixed version with `exact:`. The examples in this README match `main`. The 1.0.0 release predates the API changes listed in [Migrating from 1.x](#-migrating-from-1x).)*
+*(`from: "2.0.0"` accepts later 2.x releases; use `exact: "2.0.0"` for a fixed version or `branch: "main"` to follow development. The examples in this README match 2.0.0. See [Migrating from 1.x](#-migrating-from-1x) when upgrading from 1.0.0.)*
 
 ### Manual Drop-in
 
@@ -163,6 +163,8 @@ struct Greeting: View {
 
 `swiftUIFont(for:)` without a size category returns a fixed-size snapshot for the current trait collection, so it won't update when the text size changes. Prefer `.appFont(_:)` in views.
 
+`Text.appFont(_:)` is `@MainActor`; call it from a SwiftUI view's `body` or another main-actor context. The explicit `appFont(_:sizeCategory:)` overload keeps the `Text` type and can also be used from a nonisolated helper.
+
 #### AttributedString & Modern Swift Attributed Text
 
 ```swift
@@ -219,10 +221,11 @@ To use custom fonts in your application:
    - **Info.plist**: list the font filenames under `Fonts provided by application` (`UIAppFonts`). iOS registers them at launch.
    - **At runtime**: call `registerFont`, e.g. for fonts in a Swift package (`bundle: .module`):
      ```swift
-     FontManager.shared.registerFont(named: "Inter-Regular")
-     FontManager.shared.registerFont(named: "Inter-SemiBold")
-     FontManager.shared.registerFont(named: "Inter-Bold")
+     FontManager.shared.registerFont(named: "Inter-Regular", bundle: .module)
+     FontManager.shared.registerFont(named: "Inter-SemiBold", bundle: .module)
+     FontManager.shared.registerFont(named: "Inter-Bold", bundle: .module)
      ```
+     Use `.module` inside the Swift package target that declares the font resources. For fonts in your app target, omit `bundle:` to use `.main`.
 3. **Activate** the family:
    ```swift
    FontManager.shared.fontSource = .custom(familyName: "Inter")
@@ -258,7 +261,7 @@ Replace the simulator name with one from `xcrun simctl list devices available`, 
 ## 🔁 Migrating from 1.x
 
 - **`AttributedString`**: the iOS 15+ `attributedString(_:style:) -> AttributedString` overload is now `swiftAttributedString(_:style:)`. `attributedString(_:style:)` always returns `NSAttributedString`, so the call is no longer ambiguous and works on iOS 14.
-- **`Text.appFont(_:)`** now returns `some View` so it can follow the environment's Dynamic Type size. Where you need a `Text` (e.g. concatenation with `+`), use `appFont(_:sizeCategory:)`.
+- **`Text.appFont(_:)`** now returns `some View` so it can follow the environment's Dynamic Type size, and is `@MainActor`. Call it from `body` or another main-actor context. Where you need a `Text` (e.g. concatenation with `+`) or a nonisolated helper, use `appFont(_:sizeCategory:)`.
 - **Bar helpers** no longer overwrite `compactAppearance` / `scrollEdgeAppearance` with the standard appearance, and only set fonts. `applyTabBarFont(to:)` with a tab bar no longer changes the global `UITabBarItem` appearance proxy. `applyTabBarFont()` without one now keeps existing proxy attributes such as colors.
 - **iPad detection** now follows the idiom the app runs with: iPhone-only apps on iPad use the iPhone table, and iPad-capable apps on Apple silicon Macs and Apple Vision Pro use the iPad table. Set `isIPadOverride` to keep a specific table.
 - **Manual drop-in**: the root `FontManager.swift` copy was removed. Use [`Sources/FontManager/FontManager.swift`](Sources/FontManager/FontManager.swift).
