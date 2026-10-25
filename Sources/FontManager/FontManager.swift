@@ -112,8 +112,8 @@ public struct FontScaleSpec: Equatable, Hashable, Sendable {
 /// ```
 ///
 /// Concurrency: `FontManager` is `@unchecked Sendable`. All mutable state (the font
-/// cache, `fontSource`, and `respectsDynamicType`) is guarded by an internal `NSLock`,
-/// providing deadlock-free thread safety across any background or main thread.
+/// cache, `fontSource`, `respectsDynamicType`, and `isIPadOverride`) is guarded by an
+/// internal `NSLock`, providing deadlock-free thread safety across any background or main thread.
 ///
 /// UIKit-mutating helpers (`apply(_:to:)` and friends) are `@MainActor`-isolated
 /// because the view types they touch (`UILabel`, `UITextField`, etc.) are themselves
@@ -128,6 +128,7 @@ public final class FontManager: @unchecked Sendable {
 
     private var _fontSource: FontSource = .system
     private var _respectsDynamicType: Bool = true
+    private var _isIPadOverride: Bool?
 
     /// Override before first use (e.g. in `application(_:didFinishLaunchingWithOptions:)`).
     /// Backed by `lock` and atomically invalidates the cache on change. Safe to call from any thread.
@@ -161,25 +162,40 @@ public final class FontManager: @unchecked Sendable {
         }
     }
 
+    /// Forces the iPad (`true`) or iPhone (`false`) scale table. `nil` (the default) uses automatic detection.
+    /// Backed by `lock` and atomically invalidates the cache on change. Safe to call from any thread.
+    public var isIPadOverride: Bool? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _isIPadOverride
+        }
+        set {
+            lock.lock()
+            _isIPadOverride = newValue
+            cache.removeAll()
+            lock.unlock()
+        }
+    }
+
     // MARK: Private State
 
-    private var cache: [String: UIFont] = [:]
+    /// Every input that affects a resolved font. The size category is part of the key,
+    /// so Dynamic Type changes never serve a stale font.
+    private struct CacheKey: Hashable {
+        let style: AppTextStyle
+        let isIPad: Bool
+        let respectsDynamicType: Bool
+        let source: FontSource
+        let sizeCategory: UIContentSizeCategory
+    }
+
+    private var cache: [CacheKey: UIFont] = [:]
     private let lock = NSLock()
 
     // MARK: Init
 
-    private init() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(contentSizeCategoryDidChange),
-            name: UIContentSizeCategory.didChangeNotification,
-            object: nil
-        )
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
+    private init() {}
 
     // MARK: - Scale Tables
 
@@ -243,41 +259,63 @@ public final class FontManager: @unchecked Sendable {
 
     // MARK: - Device Detection
 
-    /// Non-blocking, deadlock-free detection of iPad device family.
-    /// Compatible with Swift 5.7+ without requiring MainActor assumptions or main thread locks.
-    private static let isPadDevice: Bool = {
+    /// Non-blocking, deadlock-free detection of the iPad user-interface idiom.
+    /// Avoids `UIDevice` (main-actor isolated) by combining the hardware model with the
+    /// device families the app declares, so it can be evaluated from any thread.
+    private static let detectedIsPad: Bool = {
         #if targetEnvironment(macCatalyst)
         return true
         #else
+        let families = Bundle.main.object(forInfoDictionaryKey: "UIDeviceFamily") as? [Int]
+        return isPadIdiom(machineIdentifier: machineIdentifier(), supportedDeviceFamilies: families)
+        #endif
+    }()
+
+    /// Decides the idiom the app runs with, given the hardware model (e.g. `"iPad16,3"`)
+    /// and the app's `UIDeviceFamily` values (1 = iPhone, 2 = iPad).
+    static func isPadIdiom(machineIdentifier: String, supportedDeviceFamilies: [Int]?) -> Bool {
+        // iPhone-only apps run with the phone idiom everywhere: in compatibility mode on iPad,
+        // and on Apple silicon Macs and Apple Vision Pro.
+        guard supportedDeviceFamilies?.contains(2) ?? true else { return false }
+        // iPhone and iPod touch hardware always uses the phone idiom.
+        if machineIdentifier.hasPrefix("iPhone") || machineIdentifier.hasPrefix("iPod") {
+            return false
+        }
+        // iPad hardware, and iPad-capable apps on Apple silicon Macs or Apple Vision Pro.
+        return true
+    }
+
+    private static func machineIdentifier() -> String {
         #if targetEnvironment(simulator)
         if let simModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"], !simModel.isEmpty {
-            return simModel.hasPrefix("iPad")
-        }
-        if let simName = ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"], !simName.isEmpty {
-            return simName.contains("iPad")
+            return simModel
         }
         #endif
         var systemInfo = utsname()
         uname(&systemInfo)
         let machineMirror = Mirror(reflecting: systemInfo.machine)
-        let identifier = machineMirror.children.reduce("") { identifier, element in
+        return machineMirror.children.reduce("") { identifier, element in
             guard let value = element.value as? Int8, value != 0 else { return identifier }
             return identifier + String(UnicodeScalar(UInt8(value)))
         }
-        return identifier.hasPrefix("iPad")
-        #endif
-    }()
+    }
 
-    /// Indicates whether the current device is an iPad.
+    /// Indicates whether the iPad scale table is in use (`isIPadOverride`, else automatic detection).
     public var isIPad: Bool {
-        Self.isPadDevice
+        lock.lock()
+        defer { lock.unlock() }
+        return _isIPadOverride ?? Self.detectedIsPad
     }
 
     /// Returns the scale spec for a given style, optionally overriding device idiom.
     public func scaleSpec(for style: AppTextStyle, isIPad: Bool? = nil) -> FontScaleSpec {
         let pad = isIPad ?? self.isIPad
         let table = pad ? Self.iPadScaleTable : Self.iPhoneScaleTable
-        return table[style] ?? FontScaleSpec(size: 17, weight: .regular)
+        guard let spec = table[style] else {
+            assertionFailure("FontManager: no scale spec for '\(style.rawValue)' in the \(pad ? "iPad" : "iPhone") table.")
+            return FontScaleSpec(size: 17, weight: .regular)
+        }
+        return spec
     }
 
     private func spec(for style: AppTextStyle) -> FontScaleSpec {
@@ -286,54 +324,90 @@ public final class FontManager: @unchecked Sendable {
 
     // MARK: - Core Font Resolution
 
-    /// Returns a `UIFont` for the given semantic style.
+    /// Returns a `UIFont` for the given semantic style, scaled for the current trait collection.
     ///
     /// - Parameter style: The semantic role (e.g. `.title1`, `.body`).
     /// - Returns: A `UIFont` appropriately sized and weighted.
     public func uiFont(for style: AppTextStyle) -> UIFont {
-        let sizeCategory = UITraitCollection.current.preferredContentSizeCategory
+        uiFont(for: style, contentSizeCategory: UITraitCollection.current.preferredContentSizeCategory)
+    }
+
+    /// Returns a `UIFont` for the given semantic style, scaled for an explicit content size category.
+    /// `.unspecified` defers to the current trait collection.
+    public func uiFont(for style: AppTextStyle, contentSizeCategory: UIContentSizeCategory) -> UIFont {
+        // Resolve `.unspecified` up front so the cache key reflects the live Dynamic Type size.
+        var sizeCategory = contentSizeCategory
+        if sizeCategory == .unspecified {
+            sizeCategory = UITraitCollection.current.preferredContentSizeCategory
+        }
 
         lock.lock()
-        let currentSource = _fontSource
-        let currentDynamicType = _respectsDynamicType
-        let cacheKey = "\(style.rawValue)-\(isIPad)-\(currentDynamicType)-\(currentSource)-\(sizeCategory.rawValue)"
-
-        if let cached = cache[cacheKey] {
+        let key = currentCacheKey(for: style, sizeCategory: sizeCategory)
+        if let cached = cache[key] {
             lock.unlock()
             return cached
         }
         lock.unlock()
 
-        let resolved = makeFont(for: style, source: currentSource, dynamicType: currentDynamicType)
+        let resolved = makeFont(for: key)
+
+        // A still-unresolved category scales with whatever the system setting is at call time,
+        // so a cached font could go stale after the user changes the text size.
+        guard sizeCategory != .unspecified else {
+            return resolved
+        }
 
         lock.lock()
         // Ensure configuration hasn't changed concurrently before caching
-        let activeKey = "\(style.rawValue)-\(isIPad)-\(_respectsDynamicType)-\(_fontSource)-\(sizeCategory.rawValue)"
-        if activeKey == cacheKey {
-            cache[cacheKey] = resolved
+        if currentCacheKey(for: style, sizeCategory: sizeCategory) == key {
+            cache[key] = resolved
         }
         lock.unlock()
 
         return resolved
     }
 
-    /// Returns a SwiftUI `Font` for the given semantic style.
+    /// Must be called with `lock` held.
+    private func currentCacheKey(for style: AppTextStyle, sizeCategory: UIContentSizeCategory) -> CacheKey {
+        CacheKey(
+            style: style,
+            isIPad: _isIPadOverride ?? Self.detectedIsPad,
+            respectsDynamicType: _respectsDynamicType,
+            source: _fontSource,
+            sizeCategory: sizeCategory
+        )
+    }
+
+    /// Returns a SwiftUI `Font` for the given semantic style, sized for the current trait collection.
+    ///
+    /// The returned font has a fixed size. Inside a SwiftUI view prefer `.appFont(_:)` or
+    /// `swiftUIFont(for:sizeCategory:)`, which follow the view's environment.
     public func swiftUIFont(for style: AppTextStyle) -> Font {
         Font(uiFont(for: style))
     }
 
+    /// Returns a SwiftUI `Font` for the given semantic style, sized for a SwiftUI content size category
+    /// (e.g. `@Environment(\.sizeCategory)`).
+    public func swiftUIFont(for style: AppTextStyle, sizeCategory: ContentSizeCategory) -> Font {
+        Font(uiFont(for: style, contentSizeCategory: UIContentSizeCategory(sizeCategory)))
+    }
+
     // MARK: - Private Font Construction
 
-    private func makeFont(for style: AppTextStyle, source: FontSource, dynamicType: Bool) -> UIFont {
-        let s = spec(for: style)
-        let baseFont = buildBaseFont(size: s.size, weight: s.weight, source: source)
+    private func makeFont(for key: CacheKey) -> UIFont {
+        let s = scaleSpec(for: key.style, isIPad: key.isIPad)
+        let baseFont = buildBaseFont(size: s.size, weight: s.weight, source: key.source)
 
-        guard dynamicType, s.scalable else {
+        guard key.respectsDynamicType, s.scalable else {
             return baseFont
         }
 
-        let metrics = UIFontMetrics(forTextStyle: closestTextStyle(for: style))
-        return metrics.scaledFont(for: baseFont)
+        let metrics = UIFontMetrics(forTextStyle: closestTextStyle(for: key.style))
+        guard key.sizeCategory != .unspecified else {
+            return metrics.scaledFont(for: baseFont)
+        }
+        let traits = UITraitCollection(preferredContentSizeCategory: key.sizeCategory)
+        return metrics.scaledFont(for: baseFont, compatibleWith: traits)
     }
 
     private func buildBaseFont(size: CGFloat, weight: AppFontWeight, source: FontSource) -> UIFont {
@@ -371,7 +445,7 @@ public final class FontManager: @unchecked Sendable {
              .textFieldPlaceholder:              return .body
         case .callout:                           return .callout
         case .subheadline:                       return .subheadline
-        case .footnote, .tooltip:               return .footnote
+        case .footnote, .tooltip:                return .footnote
         case .caption1:                          return .caption1
         case .caption2:                          return .caption2
         case .buttonPrimary, .buttonSecondary,
@@ -405,6 +479,7 @@ public final class FontManager: @unchecked Sendable {
     // MARK: - UIKit Apply Helpers
     // These are @MainActor because the view types they mutate (UILabel, UITextField,
     // UITextView, UIButton, UINavigationBar, UITabBar) are themselves @MainActor-isolated.
+    // They set the font only; use `attributedString(_:style:additionalAttributes:)` for letter-spacing.
 
     /// Applies the correct font to a `UILabel`.
     @MainActor
@@ -420,6 +495,23 @@ public final class FontManager: @unchecked Sendable {
         let s = spec(for: style)
         textField.font = uiFont(for: style)
         textField.adjustsFontForContentSizeCategory = s.scalable && respectsDynamicType
+    }
+
+    /// Applies a style's font and letter-spacing to a `UITextField`'s current placeholder,
+    /// keeping its other attributes (e.g. color). Set `placeholder` first; re-apply after
+    /// changing it or when the content size category changes.
+    @MainActor
+    public func applyPlaceholder(_ style: AppTextStyle = .textFieldPlaceholder, to textField: UITextField) {
+        guard let placeholder = textField.attributedPlaceholder
+                ?? textField.placeholder.map({ NSAttributedString(string: $0) }) else {
+            return
+        }
+        let styled = NSMutableAttributedString(attributedString: placeholder)
+        styled.addAttributes(
+            [.font: uiFont(for: style), .kern: spec(for: style).tracking],
+            range: NSRange(location: 0, length: styled.length)
+        )
+        textField.attributedPlaceholder = styled
     }
 
     /// Applies the correct font to a `UITextView`.
@@ -452,8 +544,9 @@ public final class FontManager: @unchecked Sendable {
     }
 
     /// Applies the correct font to a `UINavigationBar` (large and inline titles).
-    /// Configures `standardAppearance`, `compactAppearance`, `scrollEdgeAppearance`,
-    /// and legacy text attributes simultaneously.
+    /// Sets only the font in `standardAppearance` and in any `compactAppearance`,
+    /// `scrollEdgeAppearance`, and `compactScrollEdgeAppearance` already configured, plus the
+    /// legacy text attributes. Backgrounds, colors, and unset appearances are left untouched.
     @MainActor
     public func apply(
         largeTitleStyle: AppTextStyle = .largeTitle,
@@ -463,15 +556,22 @@ public final class FontManager: @unchecked Sendable {
         let titleFont = uiFont(for: inlineTitleStyle)
         let largeTitleFont = uiFont(for: largeTitleStyle)
 
-        let appearance = bar.standardAppearance.copy()
-        appearance.titleTextAttributes[.font] = titleFont
-        appearance.largeTitleTextAttributes[.font] = largeTitleFont
+        func withFonts(_ appearance: UINavigationBarAppearance) -> UINavigationBarAppearance {
+            let updated = appearance.copy()
+            updated.titleTextAttributes[.font] = titleFont
+            updated.largeTitleTextAttributes[.font] = largeTitleFont
+            return updated
+        }
 
-        bar.standardAppearance = appearance
-        bar.compactAppearance = appearance
-        bar.scrollEdgeAppearance = appearance
-        if #available(iOS 15.0, *) {
-            bar.compactScrollEdgeAppearance = appearance
+        bar.standardAppearance = withFonts(bar.standardAppearance)
+        if let compact = bar.compactAppearance {
+            bar.compactAppearance = withFonts(compact)
+        }
+        if let scrollEdge = bar.scrollEdgeAppearance {
+            bar.scrollEdgeAppearance = withFonts(scrollEdge)
+        }
+        if #available(iOS 15.0, *), let compactScrollEdge = bar.compactScrollEdgeAppearance {
+            bar.compactScrollEdgeAppearance = withFonts(compactScrollEdge)
         }
 
         var titleAttrs = bar.titleTextAttributes ?? [:]
@@ -483,36 +583,49 @@ public final class FontManager: @unchecked Sendable {
         bar.largeTitleTextAttributes = largeTitleAttrs
     }
 
-    /// Applies the correct font to a `UITabBarItem` label via appearance objects and appearance proxy.
+    /// Applies the tab bar item font.
+    ///
+    /// - With a `tabBar`: sets only the font in its `standardAppearance` and any
+    ///   `scrollEdgeAppearance` already configured, keeping colors and backgrounds.
+    /// - Without one: sets the font on the global `UITabBarItem` appearance proxy,
+    ///   affecting tab bar items created afterwards.
     @MainActor
     public func applyTabBarFont(to tabBar: UITabBar? = nil) {
         let font = uiFont(for: .tabBarItem)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
 
-        if let tabBar = tabBar {
-            let appearance = tabBar.standardAppearance.copy()
-            appearance.stackedLayoutAppearance.normal.titleTextAttributes = attrs
-            appearance.stackedLayoutAppearance.selected.titleTextAttributes = attrs
-            appearance.inlineLayoutAppearance.normal.titleTextAttributes = attrs
-            appearance.inlineLayoutAppearance.selected.titleTextAttributes = attrs
-            appearance.compactInlineLayoutAppearance.normal.titleTextAttributes = attrs
-            appearance.compactInlineLayoutAppearance.selected.titleTextAttributes = attrs
-
-            tabBar.standardAppearance = appearance
-            if #available(iOS 15.0, *) {
-                tabBar.scrollEdgeAppearance = appearance
+        guard let tabBar = tabBar else {
+            let proxy = UITabBarItem.appearance()
+            for state in [UIControl.State.normal, .selected] {
+                var attrs = proxy.titleTextAttributes(for: state) ?? [:]
+                attrs[.font] = font
+                proxy.setTitleTextAttributes(attrs, for: state)
             }
+            return
         }
 
-        UITabBarItem.appearance().setTitleTextAttributes(attrs, for: .normal)
-        UITabBarItem.appearance().setTitleTextAttributes(attrs, for: .selected)
+        func withFont(_ appearance: UITabBarAppearance) -> UITabBarAppearance {
+            let updated = appearance.copy()
+            for layout in [updated.stackedLayoutAppearance, updated.inlineLayoutAppearance, updated.compactInlineLayoutAppearance] {
+                for state in [layout.normal, layout.selected, layout.disabled, layout.focused] {
+                    state.titleTextAttributes[.font] = font
+                }
+            }
+            return updated
+        }
+
+        tabBar.standardAppearance = withFont(tabBar.standardAppearance)
+        if #available(iOS 15.0, *), let scrollEdge = tabBar.scrollEdgeAppearance {
+            tabBar.scrollEdgeAppearance = withFont(scrollEdge)
+        }
     }
 
     // MARK: - Custom Font Registration
 
     /// Registers a custom font from a bundle.
     ///
-    /// Call once at app launch (before `fontSource` is set to `.custom`).
+    /// Not needed for fonts listed under `UIAppFonts` in the app's Info.plist, which iOS registers
+    /// at launch. Use it for fonts outside Info.plist (e.g. in a Swift package's `Bundle.module`).
+    /// Clears the font cache on success, so styles resolved before registration pick up the font.
     ///
     /// - Parameters:
     ///   - name: Font file name without extension (e.g. "Poppins-Regular").
@@ -536,25 +649,26 @@ public final class FontManager: @unchecked Sendable {
         }
 
         var error: Unmanaged<CFError>?
-        let registered = CTFontManagerRegisterGraphicsFont(font, &error)
+        var registered = CTFontManagerRegisterGraphicsFont(font, &error)
 
-        if !registered {
-            if let cfError = error?.takeRetainedValue() {
-                let code = CFErrorGetCode(cfError)
-                let domain = CFErrorGetDomain(cfError)
-                // CoreText error code 105: kCTFontManagerErrorAlreadyRegistered
-                if code == 105 || (domain == kCTFontManagerErrorDomain && code == 105) {
-                    return true
-                }
+        if !registered, let cfError = error?.takeRetainedValue() {
+            let isCoreTextError = (CFErrorGetDomain(cfError) as String) == (kCTFontManagerErrorDomain as String)
+            let code = CTFontManagerError(rawValue: CFErrorGetCode(cfError))
+            if isCoreTextError && (code == .alreadyRegistered || code == .duplicatedName) {
+                // The font (or one with the same PostScript name, e.g. from UIAppFonts) is already available.
+                registered = true
+            } else {
                 #if DEBUG
                 let desc = CFErrorCopyDescription(cfError) as String
                 print("FontManager Warning: Failed to register '\(name)': \(desc)")
                 #endif
             }
-            return false
         }
 
-        return true
+        if registered {
+            invalidateCache()
+        }
+        return registered
     }
 
     // MARK: - Debugging
@@ -574,15 +688,18 @@ public final class FontManager: @unchecked Sendable {
 
     // MARK: - Cache Invalidation
 
-    @objc private func contentSizeCategoryDidChange() {
-        invalidateCache()
-    }
-
     /// Clears the font cache. Safe to call from any thread.
     public func invalidateCache() {
         lock.lock()
         cache.removeAll()
         lock.unlock()
+    }
+
+    /// Number of cached fonts. Exposed for tests.
+    var cachedFontCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache.count
     }
 }
 
@@ -590,11 +707,15 @@ public final class FontManager: @unchecked Sendable {
 
 @available(iOS 15.0, *)
 public extension FontManager {
-    /// Returns a Swift `AttributedString` with the correct font and letter-spacing.
-    func attributedString(_ text: String, style: AppTextStyle) -> AttributedString {
+    /// Returns a Swift `AttributedString` with the correct font and letter-spacing,
+    /// set in both the SwiftUI and UIKit attribute scopes.
+    func swiftAttributedString(_ text: String, style: AppTextStyle) -> AttributedString {
+        let s = spec(for: style)
         var attr = AttributedString(text)
-        attr.font = swiftUIFont(for: style)
-        attr.tracking = scaleSpec(for: style).tracking
+        attr.swiftUI.font = swiftUIFont(for: style)
+        attr.swiftUI.tracking = s.tracking
+        attr.uiKit.font = uiFont(for: style)
+        attr.uiKit.kern = s.tracking
         return attr
     }
 }
@@ -602,33 +723,53 @@ public extension FontManager {
 // MARK: - SwiftUI ViewModifier & Text Extensions
 
 /// Apply in SwiftUI with `.appFont(.title1)`.
+/// Follows the view's `sizeCategory` environment, so it updates with Dynamic Type
+/// and honours size overrides (e.g. in Previews).
 public struct AppFontModifier: ViewModifier {
     let style: AppTextStyle
+    @Environment(\.sizeCategory) private var sizeCategory
 
     public init(style: AppTextStyle) {
         self.style = style
     }
 
     public func body(content: Content) -> some View {
-        let spec = FontManager.shared.scaleSpec(for: style)
+        let font = FontManager.shared.swiftUIFont(for: style, sizeCategory: sizeCategory)
         if #available(iOS 16.0, *) {
             content
-                .font(FontManager.shared.swiftUIFont(for: style))
-                .tracking(spec.tracking)
+                .font(font)
+                .tracking(FontManager.shared.scaleSpec(for: style).tracking)
         } else {
             content
-                .font(FontManager.shared.swiftUIFont(for: style))
+                .font(font)
         }
     }
 }
 
+/// Applies font and `Text`-level tracking (available on iOS 14+), following the environment's size category.
+private struct AppFontText: View {
+    let text: Text
+    let style: AppTextStyle
+    @Environment(\.sizeCategory) private var sizeCategory
+
+    var body: some View {
+        text.appFont(style, sizeCategory: sizeCategory)
+    }
+}
+
 public extension Text {
-    /// Applies a semantic `AppTextStyle` font and letter-spacing tracking to this `Text` view (iOS 14+).
-    func appFont(_ style: AppTextStyle) -> Text {
-        let spec = FontManager.shared.scaleSpec(for: style)
-        return self
-            .font(FontManager.shared.swiftUIFont(for: style))
-            .tracking(spec.tracking)
+    /// Applies a semantic `AppTextStyle` font and letter-spacing tracking to this `Text` view (iOS 14+),
+    /// following the environment's Dynamic Type size.
+    func appFont(_ style: AppTextStyle) -> some View {
+        AppFontText(text: self, style: style)
+    }
+
+    /// Applies a semantic `AppTextStyle` font and tracking for an explicit size category, keeping the
+    /// `Text` type (e.g. for `Text` concatenation). Pass `@Environment(\.sizeCategory)` from your view.
+    func appFont(_ style: AppTextStyle, sizeCategory: ContentSizeCategory) -> Text {
+        self
+            .font(FontManager.shared.swiftUIFont(for: style, sizeCategory: sizeCategory))
+            .tracking(FontManager.shared.scaleSpec(for: style).tracking)
     }
 }
 
@@ -653,6 +794,12 @@ public extension UITextField {
     @MainActor
     func appFont(_ style: AppTextStyle) {
         FontManager.shared.apply(style, to: self)
+    }
+
+    /// Shorthand: `textField.appPlaceholderFont()` — styles the current placeholder.
+    @MainActor
+    func appPlaceholderFont(_ style: AppTextStyle = .textFieldPlaceholder) {
+        FontManager.shared.applyPlaceholder(style, to: self)
     }
 }
 
